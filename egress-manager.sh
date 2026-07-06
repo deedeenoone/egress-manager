@@ -242,6 +242,10 @@ egress_install_dropin() {
     fi
     mkdir -p "${d}"
     cat > "${d}/egress.conf" <<EOF
+[Unit]
+Wants=network-online.target
+After=network-online.target
+
 [Service]
 ExecStartPost=${start_prefix}${EGRESS_HELPER} up ${svc}
 ExecStopPost=${stop_prefix}${EGRESS_HELPER} down ${svc}
@@ -535,6 +539,7 @@ ${BOLD}命令:${PLAIN}
             set ss-8388 eth1 192.168.1.1 192.168.1.0/24
       可选: 追加 --strict，使 ExecStartPost/ExecStopPost 不忽略失败
       默认会用 systemd 的 '+' 特权前缀执行 helper，避免 User=nobody / User=snell 时权限不足
+      并自动添加 Wants/After=network-online.target，尽量避免首次开机时网络未就绪
 
   remove <service>
       删除服务的出网策略配置

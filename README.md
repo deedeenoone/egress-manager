@@ -94,6 +94,7 @@ sudo bash egress-manager.sh init
 > 先决条件：这里的 `snell-443` / `snell-8443` 必须是 **已经存在的 systemd 服务名**。
 > `egress-manager` 只负责给已有服务挂接出网策略，**不会创建 Snell/SS 服务本身**。
 > 如果目标服务设置了 `User=nobody`、`User=snell` 等非 root 用户，也没关系；当前版本会通过 systemd 的 `+` 前缀让 helper 以特权执行。
+> 当前版本还会自动在 drop-in 里加入 `Wants=network-online.target` 和 `After=network-online.target`，减少 reboot 后首次启动时网络尚未完全 ready 导致 helper 失败的问题。
 
 ```bash
 # 为 snell-443 配置出网IP为 10.0.0.5
@@ -376,6 +377,40 @@ ExecStopPost=+/usr/local/bin/egress-helper.sh down snell
 也就是：
 - 保留 root 特权执行
 - 但不再忽略 helper 的失败
+
+**Q: 为什么 reboot 后首次启动 snell 还是没自动建出 table 700，要手动 `systemctl restart snell` 才行？**
+
+A: 这通常是启动顺序问题。
+
+即使权限已经修好，开机时也仍可能出现：
+- `snell.service` 启动时，网络设备已存在，但默认路由/附加 IPv4 还没完全 ready
+- `egress-helper.sh up snell` 被过早执行
+- helper 失败后，首次启动没能建出 table 700
+- 等系统完全起来后再 `systemctl restart snell`，这次才成功
+
+当前版本已经默认在生成的 drop-in 中加入：
+
+```ini
+[Unit]
+Wants=network-online.target
+After=network-online.target
+```
+
+这样会尽量让服务在网络在线目标之后再启动。
+
+注意：这依赖你的系统上确实有可用的 wait-online 机制，例如：
+- `systemd-networkd-wait-online.service`
+- `NetworkManager-wait-online.service`
+
+如果系统没有对应的 wait-online 服务，`network-online.target` 可能仍然过早达成。
+
+这时建议：
+
+```bash
+systemctl list-unit-files | grep -i wait-online
+```
+
+确认你的网络栈是否提供 wait-online 服务。
 
 **Q: 为什么出站IP没有改变?**
 
