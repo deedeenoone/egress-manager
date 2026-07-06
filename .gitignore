@@ -1,0 +1,34 @@
+# System files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+
+# Logs
+*.log
+/logs/
+
+# Runtime
+/tmp/
+.cache/
+
+# Configuration backups
+*.bak
+*.backup
+*.swp~
+
+# Test outputs
+test-output/
+coverage/
+
+# Build artifacts
+dist/
+build/
+*.tar.gz
+*.zip
