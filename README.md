@@ -93,6 +93,7 @@ sudo bash egress-manager.sh init
 
 > 先决条件：这里的 `snell-443` / `snell-8443` 必须是 **已经存在的 systemd 服务名**。
 > `egress-manager` 只负责给已有服务挂接出网策略，**不会创建 Snell/SS 服务本身**。
+> 如果目标服务设置了 `User=nobody`、`User=snell` 等非 root 用户，也没关系；当前版本会通过 systemd 的 `+` 前缀让 helper 以特权执行。
 
 ```bash
 # 为 snell-443 配置出网IP为 10.0.0.5
@@ -328,6 +329,53 @@ sudo bash egress-manager.sh set snell eth0 10.0.0.1 10.0.0.0/24 10.0.0.6 --stric
 ```
 
 这样生成的 drop-in 会去掉前面的 `-`。
+
+**Q: `snell.service` 里是 `User=nobody`，这有影响吗？**
+
+A: 有影响，但当前版本已经专门处理了。
+
+如果 service 配置了：
+
+```ini
+User=nobody
+```
+
+那么普通的：
+
+```ini
+ExecStartPost=/usr/local/bin/egress-helper.sh up snell
+```
+
+会跟着 `nobody` 用户执行，结果通常会失败，因为 helper 需要：
+- 读取 `/etc/egress-manager/*.conf`
+- 执行 `ip rule`
+- 执行 `ip route`
+- 执行 `iptables`
+- 执行 `sysctl`
+
+这些都需要 root 权限。
+
+现在 `egress-manager` 生成的 drop-in 默认会使用：
+
+```ini
+ExecStartPost=-+/usr/local/bin/egress-helper.sh up snell
+ExecStopPost=-+/usr/local/bin/egress-helper.sh down snell
+```
+
+其中：
+- `+` = 以特权执行（不受 `User=` 限制）
+- `-` = 即使 helper 失败，也不让主服务直接变成 failed
+
+如果你使用 `--strict`，则会生成：
+
+```ini
+ExecStartPost=+/usr/local/bin/egress-helper.sh up snell
+ExecStopPost=+/usr/local/bin/egress-helper.sh down snell
+```
+
+也就是：
+- 保留 root 特权执行
+- 但不再忽略 helper 的失败
 
 **Q: 为什么出站IP没有改变?**
 

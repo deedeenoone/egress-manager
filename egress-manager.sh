@@ -69,6 +69,11 @@ service_control_group() {
     systemctl show -p ControlGroup --value "${svc}" 2>/dev/null || true
 }
 
+service_user() {
+    local svc="$1"
+    systemctl show -p User --value "${svc}" 2>/dev/null || true
+}
+
 iptables_backend() {
     iptables --version 2>/dev/null | sed -n '1p' || true
 }
@@ -229,11 +234,11 @@ EGEOF
 egress_install_dropin() {
     local svc="$1" strict="${2:-0}"
     local d="${SYSTEMD_DIR}/${svc}.service.d"
-    local start_prefix="-"
-    local stop_prefix="-"
+    local start_prefix="-+"
+    local stop_prefix="-+"
     if [[ "${strict}" == "1" ]]; then
-        start_prefix=""
-        stop_prefix=""
+        start_prefix="+"
+        stop_prefix="+"
     fi
     mkdir -p "${d}"
     cat > "${d}/egress.conf" <<EOF
@@ -305,6 +310,7 @@ egress_doctor() {
     local svc="$1"
     local conf="${EGRESS_DIR}/${svc}.conf"
     local cg=""
+    local svc_user=""
     local table=""
     local mark=""
     local src=""
@@ -347,6 +353,14 @@ egress_doctor() {
         ok "ControlGroup: ${cg}"
     else
         warn "无法读取 ControlGroup（服务可能未启动，或名称不对）"
+    fi
+
+    svc_user=$(service_user "${svc}")
+    if [[ -n "${svc_user}" ]]; then
+        msg "service User=: ${svc_user}"
+        if [[ "${svc_user}" != "root" ]]; then
+            warn "该服务不是以 root 运行；egress-helper 必须通过 systemd 的 '+' 前缀以特权执行"
+        fi
     fi
 
     backend=$(iptables_backend)
@@ -520,6 +534,7 @@ ${BOLD}命令:${PLAIN}
       示例: set snell-443 eth0 10.0.0.1 10.0.0.0/24 10.0.0.5
             set ss-8388 eth1 192.168.1.1 192.168.1.0/24
       可选: 追加 --strict，使 ExecStartPost/ExecStopPost 不忽略失败
+      默认会用 systemd 的 '+' 特权前缀执行 helper，避免 User=nobody / User=snell 时权限不足
 
   remove <service>
       删除服务的出网策略配置
