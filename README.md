@@ -61,7 +61,25 @@ which iptables ip systemctl
 
 ## 🚀 快速开始
 
+### 快速安装（一键命令）
+
+直接复制到VPS执行，会自动下载脚本并初始化系统：
+
+**使用 curl：**
+```bash
+sudo bash -c 'curl -fsSL https://raw.githubusercontent.com/deedeenoone/egress-manager/main/egress-manager.sh -o /usr/local/bin/egress-manager && chmod +x /usr/local/bin/egress-manager && egress-manager init'
+```
+
+**使用 wget：**
+```bash
+sudo bash -c 'wget -qO- https://raw.githubusercontent.com/deedeenoone/egress-manager/main/egress-manager.sh > /usr/local/bin/egress-manager && chmod +x /usr/local/bin/egress-manager && egress-manager init'
+```
+
+执行后即可开始使用。
+
 ### 1. 初始化
+
+也可以手动初始化（如果上面的命令不可用）：
 
 ```bash
 sudo bash egress-manager.sh init
