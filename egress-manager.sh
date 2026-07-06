@@ -59,6 +59,12 @@ check_deps() {
     fi
 }
 
+service_exists() {
+    local svc="$1"
+    systemctl list-unit-files --type=service --no-legend 2>/dev/null | awk '{print $1}' | grep -Fxq "${svc}.service"
+}
+
+
 check_cgroup_v2() {
     if ! grep -q "cgroup2" /proc/filesystems; then
         die "系统不支持 cgroup v2，需要 Linux 4.15+ 并启用 systemd unified hierarchy"
@@ -223,6 +229,11 @@ EOF
     chmod 644 "${d}/egress.conf"
 }
 
+systemd_reload() {
+    systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+
 egress_remove_dropin() {
     local svc="$1"
     rm -f "${SYSTEMD_DIR}/${svc}.service.d/egress.conf"
@@ -260,9 +271,18 @@ egress_save() {
     chmod 600 "${conf}"
     egress_write_helper
     egress_install_dropin "${svc}"
+    systemd_reload
     
     ok "已保存出网配置: ${conf}"
     ok "路由表号: ${table}, firewall mark: ${table}"
+    if service_exists "${svc}"; then
+        ok "检测到 systemd 服务: ${svc}.service"
+        msg "执行以下命令使配置生效: systemctl restart ${svc}"
+    else
+        warn "未检测到 systemd 服务: ${svc}.service"
+        warn "当前脚本只负责给已存在的 systemd 服务挂接出网策略，不会创建服务本身。"
+        msg "请确认真实服务名后再重启，例如: systemctl list-units --type=service | grep -i snell"
+    fi
     return 0
 }
 

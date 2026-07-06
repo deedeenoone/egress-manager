@@ -91,6 +91,9 @@ sudo bash egress-manager.sh init
 
 ### 2. 配置服务的出网策略
 
+> 先决条件：这里的 `snell-443` / `snell-8443` 必须是 **已经存在的 systemd 服务名**。
+> `egress-manager` 只负责给已有服务挂接出网策略，**不会创建 Snell/SS 服务本身**。
+
 ```bash
 # 为 snell-443 配置出网IP为 10.0.0.5
 sudo bash egress-manager.sh set snell-443 eth0 10.0.0.1 10.0.0.0/24 10.0.0.5
@@ -109,7 +112,16 @@ sudo bash egress-manager.sh set snell-8443 eth0 10.0.0.1 10.0.0.0/24 10.0.0.6
 ### 3. 重启服务
 
 ```bash
+# 只有当这些服务原本就存在时，这一步才会成功
 systemctl restart snell-443 snell-8443
+```
+
+如果提示 `Unit xxx.service not found`，说明你传给 `set` 的名字不是系统中真实存在的 systemd 服务名。
+可以先查：
+
+```bash
+systemctl list-units --type=service | grep -i snell
+systemctl list-unit-files --type=service | grep -i snell
 ```
 
 systemd会自动调用egress-helper应用出网策略。
