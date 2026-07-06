@@ -22,7 +22,7 @@ set -euo pipefail
 
 # ---------- 配置 ----------
 PROG_NAME="egress-manager"
-PROG_VERSION="1.0.0"
+PROG_VERSION="1.1.0"
 EGRESS_DIR="${EGRESS_DIR:-/etc/egress-manager}"
 EGRESS_HELPER="${EGRESS_HELPER:-/usr/local/bin/egress-helper.sh}"
 EGRESS_TABLE_MIN="${EGRESS_TABLE_MIN:-700}"
@@ -62,6 +62,15 @@ check_deps() {
 service_exists() {
     local svc="$1"
     systemctl list-unit-files --type=service --no-legend 2>/dev/null | awk '{print $1}' | grep -Fxq "${svc}.service"
+}
+
+service_control_group() {
+    local svc="$1"
+    systemctl show -p ControlGroup --value "${svc}" 2>/dev/null || true
+}
+
+iptables_backend() {
+    iptables --version 2>/dev/null | sed -n '1p' || true
 }
 
 
@@ -218,13 +227,19 @@ EGEOF
 
 # ---------- Systemd Drop-in 管理 ----------
 egress_install_dropin() {
-    local svc="$1"
+    local svc="$1" strict="${2:-0}"
     local d="${SYSTEMD_DIR}/${svc}.service.d"
+    local start_prefix="-"
+    local stop_prefix="-"
+    if [[ "${strict}" == "1" ]]; then
+        start_prefix=""
+        stop_prefix=""
+    fi
     mkdir -p "${d}"
     cat > "${d}/egress.conf" <<EOF
 [Service]
-ExecStartPost=-${EGRESS_HELPER} up ${svc}
-ExecStopPost=-${EGRESS_HELPER} down ${svc}
+ExecStartPost=${start_prefix}${EGRESS_HELPER} up ${svc}
+ExecStopPost=${stop_prefix}${EGRESS_HELPER} down ${svc}
 EOF
     chmod 644 "${d}/egress.conf"
 }
@@ -242,7 +257,7 @@ egress_remove_dropin() {
 
 # ---------- 配置保存/删除 ----------
 egress_save() {
-    local svc="$1" ifc="$2" gw="$3" net="$4" src="${5:-}"
+    local svc="$1" ifc="$2" gw="$3" net="$4" src="${5:-}" strict="${6:-0}"
     
     mkdir -p "${EGRESS_DIR}"
     local conf="${EGRESS_DIR}/${svc}.conf"
@@ -270,7 +285,7 @@ egress_save() {
     
     chmod 600 "${conf}"
     egress_write_helper
-    egress_install_dropin "${svc}"
+    egress_install_dropin "${svc}" "${strict}"
     systemd_reload
     
     ok "已保存出网配置: ${conf}"
@@ -284,6 +299,106 @@ egress_save() {
         msg "请确认真实服务名后再重启，例如: systemctl list-units --type=service | grep -i snell"
     fi
     return 0
+}
+
+egress_doctor() {
+    local svc="$1"
+    local conf="${EGRESS_DIR}/${svc}.conf"
+    local cg=""
+    local table=""
+    local mark=""
+    local src=""
+    local backend=""
+
+    echo
+    echo "egress doctor: ${svc}"
+    echo "────────────────────────────────────────"
+
+    if service_exists "${svc}"; then
+        ok "systemd 服务存在: ${svc}.service"
+    else
+        err "systemd 服务不存在: ${svc}.service"
+    fi
+
+    if [[ -f "${conf}" ]]; then
+        ok "配置文件存在: ${conf}"
+        table=$(awk -F= '/^table=/{print $2}' "${conf}" 2>/dev/null | head -n1)
+        mark=$(awk -F= '/^mark=/{print $2}' "${conf}" 2>/dev/null | head -n1)
+        src=$(awk -F= '/^srcip=/{print $2}' "${conf}" 2>/dev/null | head -n1)
+    else
+        err "配置文件不存在: ${conf}"
+    fi
+
+    if [[ -x "${EGRESS_HELPER}" ]]; then
+        ok "helper 存在且可执行: ${EGRESS_HELPER}"
+    else
+        err "helper 不存在或不可执行: ${EGRESS_HELPER}"
+    fi
+
+    if [[ -f "${SYSTEMD_DIR}/${svc}.service.d/egress.conf" ]]; then
+        ok "drop-in 存在: ${SYSTEMD_DIR}/${svc}.service.d/egress.conf"
+        sed 's/^/  /' "${SYSTEMD_DIR}/${svc}.service.d/egress.conf"
+    else
+        err "drop-in 不存在: ${SYSTEMD_DIR}/${svc}.service.d/egress.conf"
+    fi
+
+    cg=$(service_control_group "${svc}")
+    if [[ -n "${cg}" ]]; then
+        ok "ControlGroup: ${cg}"
+    else
+        warn "无法读取 ControlGroup（服务可能未启动，或名称不对）"
+    fi
+
+    backend=$(iptables_backend)
+    if [[ -n "${backend}" ]]; then
+        msg "iptables 后端: ${backend}"
+        if echo "${backend}" | grep -q 'nf_tables'; then
+            warn "当前为 iptables-nft；-m cgroup --path 在某些环境下可能不稳定"
+        fi
+    fi
+
+    if [[ -n "${table}" ]]; then
+        if ip route show table "${table}" 2>/dev/null | grep -q .; then
+            ok "路由表 ${table} 已存在"
+            ip route show table "${table}" 2>/dev/null | sed 's/^/  /'
+        else
+            warn "路由表 ${table} 不存在或为空"
+        fi
+    fi
+
+    if [[ -n "${mark}" ]]; then
+        if ip rule show 2>/dev/null | grep -q "lookup ${table}"; then
+            ok "策略路由规则已存在 (mark=${mark} table=${table})"
+            ip rule show 2>/dev/null | grep "lookup ${table}" | sed 's/^/  /'
+        else
+            warn "策略路由规则不存在 (mark=${mark} table=${table})"
+        fi
+
+        if iptables -t mangle -S OUTPUT 2>/dev/null | grep -q -- "--set-mark ${mark}"; then
+            ok "mangle OUTPUT 打标规则存在"
+        else
+            warn "mangle OUTPUT 打标规则不存在"
+        fi
+
+        if iptables -t nat -S POSTROUTING 2>/dev/null | grep -q -- "--mark ${mark} .*SNAT"; then
+            ok "POSTROUTING SNAT 规则存在"
+            iptables -t nat -S POSTROUTING 2>/dev/null | grep -- "--mark ${mark} .*SNAT" | sed 's/^/  /'
+        else
+            warn "POSTROUTING SNAT 规则不存在"
+        fi
+    fi
+
+    if [[ -n "${src}" ]]; then
+        if ip -o -4 addr show | awk '{print $4}' | sed 's#/.*##' | grep -Fxq "${src}"; then
+            ok "源 IP 已配置在本机: ${src}"
+        else
+            warn "源 IP 未出现在本机网卡上: ${src}"
+        fi
+    fi
+
+    echo "────────────────────────────────────────"
+    msg "如需进一步验证，可手动执行: ${EGRESS_HELPER} up ${svc}"
+    echo
 }
 
 egress_remove() {
@@ -404,6 +519,7 @@ ${BOLD}命令:${PLAIN}
       为服务配置出网策略
       示例: set snell-443 eth0 10.0.0.1 10.0.0.0/24 10.0.0.5
             set ss-8388 eth1 192.168.1.1 192.168.1.0/24
+      可选: 追加 --strict，使 ExecStartPost/ExecStopPost 不忽略失败
 
   remove <service>
       删除服务的出网策略配置
@@ -415,6 +531,10 @@ ${BOLD}命令:${PLAIN}
 
   list
       列表显示所有已配置的出网策略
+
+  doctor <service>
+      诊断指定服务的 egress 挂载与规则状态
+      示例: doctor snell-443
 
   routes
       显示当前活跃的自定义路由表
@@ -437,6 +557,7 @@ ${BOLD}参数说明:${PLAIN}
   <gateway>     出网网关IP（如 10.0.0.1）；留空用 - 表示直连
   <subnet>      出网网段CIDR（如 10.0.0.0/24）；留空用 -
   [srcip]       出网源IP（多IP必须显式指定；可选）
+  --strict      生成严格 drop-in：helper 失败时，不忽略 systemd 的 ExecStartPost / ExecStopPost 错误
 
 ${BOLD}工作原理:${PLAIN}
   1. 每个服务分配独立的路由表号和 fwmark
@@ -452,6 +573,9 @@ ${BOLD}典型场景:${PLAIN}
   sudo bash egress-manager.sh set snell-443 eth0 10.0.0.1 10.0.0.0/24 10.0.0.5
   sudo bash egress-manager.sh set snell-8443 eth0 10.0.0.1 10.0.0.0/24 10.0.0.6
   systemctl restart snell-443 snell-8443
+
+  # 诊断某个服务为什么没有生效
+  sudo bash egress-manager.sh doctor snell-443
 
 ${BOLD}系统要求:${PLAIN}
   - Linux 4.15+ (cgroup v2, conntrack)
@@ -478,10 +602,16 @@ main() {
     case "${cmd}" in
         set)
             [[ $# -ge 4 ]] || die "set 命令需要至少4个参数"
-            local svc="$1" ifc="$2" gw="$3" net="$4" src="${5:-}"
+            local svc="$1" ifc="$2" gw="$3" net="$4" src="${5:-}" strict="0"
+            if [[ "${src}" == "--strict" ]]; then
+                src=""
+                strict="1"
+            elif [[ "${6:-}" == "--strict" ]]; then
+                strict="1"
+            fi
             [[ "${gw}" == "-" ]] && gw=""
             [[ "${net}" == "-" ]] && net=""
-            egress_save "$svc" "$ifc" "$gw" "$net" "$src"
+            egress_save "$svc" "$ifc" "$gw" "$net" "$src" "$strict"
             ;;
         remove)
             [[ $# -ge 1 ]] || die "remove 命令需要服务名参数"
@@ -493,6 +623,10 @@ main() {
             ;;
         list)
             egress_list
+            ;;
+        doctor)
+            [[ $# -ge 1 ]] || die "doctor 命令需要服务名参数"
+            egress_doctor "$1"
             ;;
         routes)
             egress_show_routes

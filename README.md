@@ -100,6 +100,9 @@ sudo bash egress-manager.sh set snell-443 eth0 10.0.0.1 10.0.0.0/24 10.0.0.5
 
 # 为 snell-8443 配置出网IP为 10.0.0.6
 sudo bash egress-manager.sh set snell-8443 eth0 10.0.0.1 10.0.0.0/24 10.0.0.6
+
+# 严格模式：如果 egress-helper 执行失败，让 systemd 明确报错
+sudo bash egress-manager.sh set snell-8443 eth0 10.0.0.1 10.0.0.0/24 10.0.0.6 --strict
 ```
 
 参数说明：
@@ -140,6 +143,9 @@ sudo bash egress-manager.sh routes
 
 # 查看策略路由规则
 sudo bash egress-manager.sh rules
+
+# 诊断某个服务为什么没有生效
+sudo bash egress-manager.sh doctor snell-443
 ```
 
 ## 💡 使用场景
@@ -189,6 +195,9 @@ systemctl restart snell-443
 # 用法: set <service> <iface> <gateway> <subnet> [srcip]
 sudo bash egress-manager.sh set snell-443 eth0 10.0.0.1 10.0.0.0/24 10.0.0.5
 
+# 严格模式：不忽略 ExecStartPost / ExecStopPost 失败
+sudo bash egress-manager.sh set snell-443 eth0 10.0.0.1 10.0.0.0/24 10.0.0.5 --strict
+
 # 删除配置（回到默认路由）
 sudo bash egress-manager.sh remove snell-443
 
@@ -197,6 +206,9 @@ sudo bash egress-manager.sh show snell-443
 
 # 列表显示所有已配置的服务
 sudo bash egress-manager.sh list
+
+# 诊断服务的 egress 状态
+sudo bash egress-manager.sh doctor snell-443
 
 # 显示当前活跃的自定义路由表
 sudo bash egress-manager.sh routes
@@ -295,6 +307,27 @@ sudo -u snell bash -c 'curl https://ifconfig.me'
 ```
 
 ### 常见问题
+
+**Q: `ExecStartPost=-...` 里等号后面的 `-` 是什么意思？**
+
+A: 这是 systemd 的前缀语法，表示“即使这个命令失败，也不要把整个服务判定为失败”。
+
+例如：
+```ini
+ExecStartPost=-/usr/local/bin/egress-helper.sh up snell
+```
+
+表示：
+- 正常执行 `egress-helper.sh up snell`
+- 但如果 helper 返回非 0，systemd 仍继续让主服务保持启动成功状态
+
+如果你希望 helper 一旦失败就让 systemd 明确报错，可以在 `set` 时使用 `--strict`：
+
+```bash
+sudo bash egress-manager.sh set snell eth0 10.0.0.1 10.0.0.0/24 10.0.0.6 --strict
+```
+
+这样生成的 drop-in 会去掉前面的 `-`。
 
 **Q: 为什么出站IP没有改变?**
 
